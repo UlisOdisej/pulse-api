@@ -1,4 +1,11 @@
-export default function handler(req, res) {
+import { createClient } from "@supabase/supabase-js";
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_ANON_KEY
+);
+
+export default async function handler(req, res) {
   try {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -14,33 +21,44 @@ export default function handler(req, res) {
 
     let body = {};
     try {
-      body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body || {});
+      body = typeof req.body === "string"
+        ? JSON.parse(req.body)
+        : (req.body || {});
     } catch (e) {
       body = {};
     }
 
-    const q = (body.question || "").toLowerCase().trim();
+    const q = (body.question || "").trim();
 
-    const data = [
-      { id: 1, category: "Film", author: "Tarkovski", title: "Ogledalo" },
-      { id: 2, category: "Film", author: "Tarkovski", title: "Stalker" },
-      { id: 3, category: "Film", author: "Bergman", title: "Persona" },
-      { id: 4, category: "Filozofija", author: "Niče", title: "Zaratustra" },
-      { id: 5, category: "Filozofija", author: "Platon", title: "Država" },
-      { id: 6, category: "Muzika", author: "The Beatles", title: "Abbey Road" },
-      { id: 7, category: "Muzika", author: "Bowie", title: "Heroes" }
-    ];
+    // 1. generiši embedding (ako već imaš OpenAI helper, ubaci ga ovde)
+    const embeddingRes = await fetch("https://api.openai.com/v1/embeddings", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: "text-embedding-3-small",
+        input: q
+      })
+    });
 
-    const result = q
-      ? data.filter(d =>
-          d.author.toLowerCase().includes(q) ||
-          d.title.toLowerCase().includes(q) ||
-          d.category.toLowerCase().includes(q)
-        )
-      : data;
+    const embeddingData = await embeddingRes.json();
+    const query_embedding = embeddingData.data[0].embedding;
+
+    // 2. pretraga Supabase-a
+    const { data, error } = await supabase.rpc("match_documents", {
+      query_embedding,
+      match_threshold: 0,
+      match_count: 50
+    });
+
+    if (error) {
+      return res.status(500).json({ error: error.message });
+    }
 
     return res.status(200).json({
-      answer: result,
+      answer: data,
       ok: true
     });
 
