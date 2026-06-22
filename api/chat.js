@@ -1,3 +1,10 @@
+import { createClient } from "@supabase/supabase-js";
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY
+);
+
 export default async function handler(req, res) {
   try {
     res.setHeader("Access-Control-Allow-Origin", "*");
@@ -26,55 +33,50 @@ export default async function handler(req, res) {
       });
     }
 
-    const supabaseUrl = process.env.SUPABASE_URL;
-    const supabaseKey = process.env.SUPABASE_KEY;
-
-    const query = q.toLowerCase();
-
-    // 1. POVUCI KORPUS
-    const searchRes = await fetch(
-      `${supabaseUrl}/rest/v1/pulse_documents?select=id,title,permalink,content&limit=200`,
+    const embeddingRes = await fetch(
+      "https://api.openai.com/v1/embeddings",
       {
+        method: "POST",
         headers: {
-          apikey: supabaseKey,
-          Authorization: `Bearer ${supabaseKey}`
-        }
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+        },
+        body: JSON.stringify({
+          model: "text-embedding-3-small",
+          input: q
+        })
       }
     );
 
-    const data = await searchRes.json();
+    const embeddingData = await embeddingRes.json();
+    const query_embedding = embeddingData?.data?.[0]?.embedding;
 
-    // 2. INTELIGENTNI FILTER (ključna ispravka)
-    const filtered = (data || []).filter(item => {
-      const text = (
-        (item.title || "") +
-        " " +
-        (item.content || "")
-      ).toLowerCase();
+    if (!query_embedding) {
+      return res.status(500).json({
+        error: "Embedding failed",
+        detail: embeddingData
+      });
+    }
 
-      // hard match za autore
-      if (
-        text.includes("tarkov") ||
-        text.includes("bergman")
-      ) {
-        return true;
-      }
-
-      // fallback keyword match
-      return query
-        .split(/\s+/)
-        .some(word => text.includes(word));
+    const { data, error } = await supabase.rpc("match_documents", {
+      query_embedding,
+      match_threshold: 0.75,
+      match_count: 10
     });
 
-    // 3. KONTEXT ZA AI
-    const context = filtered
-      .slice(0, 12)
+    if (error) {
+      return res.status(500).json({
+        error: error.message
+      });
+    }
+
+    const context = (data || [])
       .map(
-        d => `${d.title}\n${(d.content || "").slice(0, 900)}`
+        d =>
+          `${d.title}\n${(d.content || "").slice(0, 900)}`
       )
       .join("\n\n");
 
-    // 4. AI ODGOVOR
     const aiRes = await fetch(
       "https://api.openai.com/v1/chat/completions",
       {
@@ -89,15 +91,11 @@ export default async function handler(req, res) {
             {
               role: "system",
               content:
-                "Ti si kustos P.U.L.S.E biblioteke. Odgovaraš isključivo na osnovu dostavljenih tekstova. Ne izmišljaš izvore. Ako nema materijala, to jasno kažeš."
+                "Ti si kustos P.U.L.S.E biblioteke. Odgovaraš samo na osnovu datih tekstova."
             },
             {
               role: "user",
-              content: `Pitanje: ${q}
-
-Tekstovi iz arhive:
-
-${context}`
+              content: `Pitanje: ${q}\n\nTekstovi:\n${context}`
             }
           ]
         })
@@ -106,19 +104,15 @@ ${context}`
 
     const aiData = await aiRes.json();
 
-    const answer =
-      aiData?.choices?.[0]?.message?.content ||
-      "Nema dovoljno podataka u arhivi.";
-
     return res.status(200).json({
-      answer,
-      sources: filtered.slice(0, 12),
+      answer:
+        aiData?.choices?.[0]?.message?.content ||
+        "Nema dovoljno podataka.",
+      sources: data || [],
       ok: true
     });
   } catch (err) {
-    return res.status(200).json({
-      answer: "",
-      sources: [],
+    return res.status(500).json({
       error: err.message
     });
   }
