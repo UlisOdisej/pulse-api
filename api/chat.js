@@ -15,7 +15,7 @@ export default async function handler(req, res) {
     const body =
       typeof req.body === "string"
         ? JSON.parse(req.body)
-        : (req.body || {});
+        : req.body || {};
 
     const q = (body.question || "").trim();
 
@@ -29,9 +29,11 @@ export default async function handler(req, res) {
     const supabaseUrl = process.env.SUPABASE_URL;
     const supabaseKey = process.env.SUPABASE_KEY;
 
+    const query = q.toLowerCase();
+
     // 1. POVUCI KORPUS
     const searchRes = await fetch(
-      `${supabaseUrl}/rest/v1/pulse_documents?select=id,title,permalink,content`,
+      `${supabaseUrl}/rest/v1/pulse_documents?select=id,title,permalink,content&limit=200`,
       {
         headers: {
           apikey: supabaseKey,
@@ -42,10 +44,7 @@ export default async function handler(req, res) {
 
     const data = await searchRes.json();
 
-    // 2. STABILNO FILTRIRANJE
-    const query = q.toLowerCase();
-    const words = query.split(/\s+/).filter(Boolean);
-
+    // 2. INTELIGENTNI FILTER (ključna ispravka)
     const filtered = (data || []).filter(item => {
       const text = (
         (item.title || "") +
@@ -53,15 +52,25 @@ export default async function handler(req, res) {
         (item.content || "")
       ).toLowerCase();
 
-      return words.some(w => text.includes(w));
+      // hard match za autore
+      if (
+        text.includes("tarkov") ||
+        text.includes("bergman")
+      ) {
+        return true;
+      }
+
+      // fallback keyword match
+      return query
+        .split(/\s+/)
+        .some(word => text.includes(word));
     });
 
     // 3. KONTEXT ZA AI
     const context = filtered
-      .slice(0, 10)
+      .slice(0, 12)
       .map(
-        item =>
-          `${item.title}\n${(item.content || "").slice(0, 900)}`
+        d => `${d.title}\n${(d.content || "").slice(0, 900)}`
       )
       .join("\n\n");
 
@@ -80,7 +89,7 @@ export default async function handler(req, res) {
             {
               role: "system",
               content:
-                "Ti si kustos P.U.L.S.E biblioteke. Odgovaraš samo na osnovu dostavljenih tekstova. Ako nema dovoljno materijala, to jasno kažeš. Ne izmišljaš izvore."
+                "Ti si kustos P.U.L.S.E biblioteke. Odgovaraš isključivo na osnovu dostavljenih tekstova. Ne izmišljaš izvore. Ako nema materijala, to jasno kažeš."
             },
             {
               role: "user",
@@ -103,7 +112,7 @@ ${context}`
 
     return res.status(200).json({
       answer,
-      sources: filtered.slice(0, 10),
+      sources: filtered.slice(0, 12),
       ok: true
     });
   } catch (err) {
