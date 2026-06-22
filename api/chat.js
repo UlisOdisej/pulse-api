@@ -25,9 +25,15 @@ export default async function handler(req, res) {
     const supabaseUrl = process.env.SUPABASE_URL;
     const supabaseKey = process.env.SUPABASE_KEY;
 
-    // 1. KLASIČNA PRETRAGA (STABILNO)
+    // 1. OTVORENA PRETRAGA (DA UVEK VRATI NEŠTO)
+    const keywords = q.split(" ").filter(Boolean);
+
+    const orQuery = keywords
+      .map(k => `content.ilike.*${k}*,title.ilike.*${k}*`)
+      .join(",");
+
     const searchRes = await fetch(
-      `${supabaseUrl}/rest/v1/pulse_documents?select=id,title,permalink,content&or=(title.ilike.*${q}*,content.ilike.*${q}*)&limit=10`,
+      `${supabaseUrl}/rest/v1/pulse_documents?select=id,title,permalink,content&or=(${orQuery})&limit=20`,
       {
         headers: {
           apikey: supabaseKey,
@@ -38,13 +44,12 @@ export default async function handler(req, res) {
 
     const data = await searchRes.json();
 
-    // 2. KONTEXT ZA AI
+    // 2. AI SAŽETAK
     const context = (data || [])
       .slice(0, 6)
-      .map(d => `${d.title}\n${d.content?.slice(0, 400) || ""}`)
+      .map(d => `${d.title}\n${d.content?.slice(0, 300) || ""}`)
       .join("\n\n");
 
-    // 3. AI ODGOVOR (VODIČ KROZ BIBLIOTEKU)
     const aiRes = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -56,22 +61,21 @@ export default async function handler(req, res) {
         messages: [
           {
             role: "system",
-            content:
-              "Ti si kustos P.U.L.S.E biblioteke. Odgovaraš kratko, jasno i vodiš korisnika kroz tekstove."
+            content: "Ti si kustos P.U.L.S.E biblioteke. Kratko objašnjavaš i vodiš kroz tekstove."
           },
           {
             role: "user",
-            content: `Pitanje: ${q}\n\nTekstovi iz arhive:\n${context}\n\nNapiši kratak odgovor i predlog šta dalje čitati.`
+            content: `Pitanje: ${q}\n\nTekstovi:\n${context}`
           }
         ]
       })
     });
 
     const aiData = await aiRes.json();
-    const answer =
-      aiData?.choices?.[0]?.message?.content || "Nema dostupnog odgovora.";
 
-    // 4. RETURN
+    const answer =
+      aiData?.choices?.[0]?.message?.content || "Nema dovoljno podataka u arhivi.";
+
     return res.status(200).json({
       answer,
       sources: data || [],
