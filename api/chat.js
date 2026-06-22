@@ -30,7 +30,11 @@ export default async function handler(req, res) {
 
     const q = (body.question || "").trim();
 
-    // 1. generiši embedding (ako već imaš OpenAI helper, ubaci ga ovde)
+    if (!q) {
+      return res.status(400).json({ error: "Empty query" });
+    }
+
+    // EMBEDDING (OpenAI)
     const embeddingRes = await fetch("https://api.openai.com/v1/embeddings", {
       method: "POST",
       headers: {
@@ -44,9 +48,17 @@ export default async function handler(req, res) {
     });
 
     const embeddingData = await embeddingRes.json();
-    const query_embedding = embeddingData.data[0].embedding;
 
-    // 2. pretraga Supabase-a
+    const query_embedding = embeddingData?.data?.[0]?.embedding;
+
+    if (!query_embedding) {
+      return res.status(500).json({
+        error: "Embedding failed",
+        detail: embeddingData
+      });
+    }
+
+    // SUPABASE RAG SEARCH
     const { data, error } = await supabase.rpc("match_documents", {
       query_embedding,
       match_threshold: 0,
