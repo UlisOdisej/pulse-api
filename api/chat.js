@@ -29,12 +29,9 @@ export default async function handler(req, res) {
     const supabaseUrl = process.env.SUPABASE_URL;
     const supabaseKey = process.env.SUPABASE_KEY;
 
-    const query = q.toLowerCase().trim();
-    const words = query.split(/\s+/).filter(Boolean);
-
-    // 1. POVUCI VEĆI KORPUS (NE NASUMIČNO, NE USKO)
+    // 1. POVUCI KORPUS
     const searchRes = await fetch(
-      `${supabaseUrl}/rest/v1/pulse_documents?select=id,title,permalink,content&limit=200`,
+      `${supabaseUrl}/rest/v1/pulse_documents?select=id,title,permalink,content`,
       {
         headers: {
           apikey: supabaseKey,
@@ -45,7 +42,10 @@ export default async function handler(req, res) {
 
     const data = await searchRes.json();
 
-    // 2. STABILAN FILTER (NE GUBI RELEVANTNE AUTORE)
+    // 2. STABILNO FILTRIRANJE
+    const query = q.toLowerCase();
+    const words = query.split(/\s+/).filter(Boolean);
+
     const filtered = (data || []).filter(item => {
       const text = (
         (item.title || "") +
@@ -58,7 +58,7 @@ export default async function handler(req, res) {
 
     // 3. KONTEXT ZA AI
     const context = filtered
-      .slice(0, 12)
+      .slice(0, 10)
       .map(
         item =>
           `${item.title}\n${(item.content || "").slice(0, 900)}`
@@ -79,15 +79,8 @@ export default async function handler(req, res) {
           messages: [
             {
               role: "system",
-              content: `Ti si kustos P.U.L.S.E biblioteke.
-
-Radiš samo sa dostavljenim tekstovima.
-
-Ako nema dovoljno materijala, reci to.
-
-Ako ima, objasni jasno i poveži autore i teme.
-
-Na kraju predloži dalje čitanje.`
+              content:
+                "Ti si kustos P.U.L.S.E biblioteke. Odgovaraš samo na osnovu dostavljenih tekstova. Ako nema dovoljno materijala, to jasno kažeš. Ne izmišljaš izvore."
             },
             {
               role: "user",
@@ -110,7 +103,7 @@ ${context}`
 
     return res.status(200).json({
       answer,
-      sources: filtered.slice(0, 12),
+      sources: filtered.slice(0, 10),
       ok: true
     });
   } catch (err) {
