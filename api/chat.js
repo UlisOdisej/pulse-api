@@ -29,9 +29,12 @@ export default async function handler(req, res) {
     const supabaseUrl = process.env.SUPABASE_URL;
     const supabaseKey = process.env.SUPABASE_KEY;
 
-    // 1. UVEK POVUCI VEĆI KORPUS (stabilnost)
+    const query = q.toLowerCase().trim();
+    const words = query.split(/\s+/).filter(Boolean);
+
+    // 1. POVUCI VEĆI KORPUS (NE NASUMIČNO, NE USKO)
     const searchRes = await fetch(
-      `${supabaseUrl}/rest/v1/pulse_documents?select=id,title,permalink,content&limit=60`,
+      `${supabaseUrl}/rest/v1/pulse_documents?select=id,title,permalink,content&limit=200`,
       {
         headers: {
           apikey: supabaseKey,
@@ -42,36 +45,27 @@ export default async function handler(req, res) {
 
     const data = await searchRes.json();
 
-    // 2. PAMETNO FILTRIRANJE (balans preciznosti i širine)
-    const query = q.toLowerCase().trim();
-    const words = query.split(/\s+/).filter(Boolean);
-
+    // 2. STABILAN FILTER (NE GUBI RELEVANTNE AUTORE)
     const filtered = (data || []).filter(item => {
-      const content = (
+      const text = (
         (item.title || "") +
         " " +
         (item.content || "")
       ).toLowerCase();
 
-      // jedno pitanje → širi match
-      if (words.length === 1) {
-        return content.includes(words[0]);
-      }
-
-      // više pojmova → fleksibilno
-      return words.some(w => content.includes(w));
+      return words.some(w => text.includes(w));
     });
 
     // 3. KONTEXT ZA AI
     const context = filtered
-      .slice(0, 10)
+      .slice(0, 12)
       .map(
         item =>
           `${item.title}\n${(item.content || "").slice(0, 900)}`
       )
       .join("\n\n");
 
-    // 4. OPENAI
+    // 4. AI ODGOVOR
     const aiRes = await fetch(
       "https://api.openai.com/v1/chat/completions",
       {
@@ -87,9 +81,11 @@ export default async function handler(req, res) {
               role: "system",
               content: `Ti si kustos P.U.L.S.E biblioteke.
 
-Odgovaraš samo na osnovu dostavljenih tekstova.
+Radiš samo sa dostavljenim tekstovima.
 
-Ako nema dovoljno materijala, reci to jasno.
+Ako nema dovoljno materijala, reci to.
+
+Ako ima, objasni jasno i poveži autore i teme.
 
 Na kraju predloži dalje čitanje.`
             },
@@ -114,7 +110,7 @@ ${context}`
 
     return res.status(200).json({
       answer,
-      sources: filtered.slice(0, 10),
+      sources: filtered.slice(0, 12),
       ok: true
     });
   } catch (err) {
