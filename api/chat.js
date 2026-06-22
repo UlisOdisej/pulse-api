@@ -58,23 +58,38 @@ export default async function handler(req, res) {
       });
     }
 
-    const { data, error } = await supabase.rpc("match_documents", {
-      query_embedding,
-      match_threshold: 0.75,
-      match_count: 10
-    });
+    let data = [];
+    let error = null;
+
+    try {
+      const rpcRes = await supabase.rpc("match_documents", {
+        query_embedding,
+        match_threshold: 0.75,
+        match_count: 10
+      });
+
+      data = rpcRes.data;
+      error = rpcRes.error;
+    } catch (e) {
+      error = e;
+    }
 
     if (error) {
-      return res.status(500).json({
-        error: error.message
+      const fallback = await supabase
+        .from("pulse_documents")
+        .select("id,title,content,permalink")
+        .limit(20);
+
+      data = (fallback.data || []).filter(d => {
+        const t =
+          ((d.title || "") + " " + (d.content || "")).toLowerCase();
+        return t.includes(q.toLowerCase().split(" ")[0]);
       });
     }
 
     const context = (data || [])
-      .map(
-        d =>
-          `${d.title}\n${(d.content || "").slice(0, 900)}`
-      )
+      .slice(0, 10)
+      .map(d => `${d.title}\n${(d.content || "").slice(0, 900)}`)
       .join("\n\n");
 
     const aiRes = await fetch(
@@ -91,7 +106,7 @@ export default async function handler(req, res) {
             {
               role: "system",
               content:
-                "Ti si kustos P.U.L.S.E biblioteke. Odgovaraš samo na osnovu datih tekstova."
+                "Ti si kustos P.U.L.S.E biblioteke. Odgovaraš samo na osnovu dostavljenih tekstova."
             },
             {
               role: "user",
