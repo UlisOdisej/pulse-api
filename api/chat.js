@@ -29,15 +29,9 @@ export default async function handler(req, res) {
     const supabaseUrl = process.env.SUPABASE_URL;
     const supabaseKey = process.env.SUPABASE_KEY;
 
-    // PRETRAGA
-    const keywords = q.split(/\s+/).filter(Boolean);
-
-    const orQuery = keywords
-      .map(k => `content.ilike.*${k}*,title.ilike.*${k}*`)
-      .join(",");
-
+    // 1. UVEK POVUCI VEĆI KORPUS (stabilnost)
     const searchRes = await fetch(
-      `${supabaseUrl}/rest/v1/pulse_documents?select=id,title,permalink,content&or=(${orQuery})&limit=30`,
+      `${supabaseUrl}/rest/v1/pulse_documents?select=id,title,permalink,content&limit=60`,
       {
         headers: {
           apikey: supabaseKey,
@@ -48,30 +42,36 @@ export default async function handler(req, res) {
 
     const data = await searchRes.json();
 
-    // FILTRIRANJE RELEVANTNIH TEKSTOVA
-    const keywords2 = q
-      .toLowerCase()
-      .split(/\s+/)
-      .filter(w => w.length > 2);
+    // 2. PAMETNO FILTRIRANJE (balans preciznosti i širine)
+    const query = q.toLowerCase().trim();
+    const words = query.split(/\s+/).filter(Boolean);
 
     const filtered = (data || []).filter(item => {
-      const text = (
+      const content = (
         (item.title || "") +
         " " +
         (item.content || "")
       ).toLowerCase();
 
-      return keywords2.some(word => text.includes(word));
+      // jedno pitanje → širi match
+      if (words.length === 1) {
+        return content.includes(words[0]);
+      }
+
+      // više pojmova → fleksibilno
+      return words.some(w => content.includes(w));
     });
 
+    // 3. KONTEXT ZA AI
     const context = filtered
-      .slice(0, 8)
-      .map(item =>
-        `${item.title}\n${(item.content || "").slice(0, 1000)}`
+      .slice(0, 10)
+      .map(
+        item =>
+          `${item.title}\n${(item.content || "").slice(0, 900)}`
       )
       .join("\n\n");
 
-    // OPENAI
+    // 4. OPENAI
     const aiRes = await fetch(
       "https://api.openai.com/v1/chat/completions",
       {
@@ -85,25 +85,19 @@ export default async function handler(req, res) {
           messages: [
             {
               role: "system",
-              content:
-                `Ti si kustos digitalne biblioteke P.U.L.S.E.
+              content: `Ti si kustos P.U.L.S.E biblioteke.
 
-Odgovaraj ISKLJUČIVO na osnovu dostavljenih tekstova.
+Odgovaraš samo na osnovu dostavljenih tekstova.
 
-Ne izmišljaj činjenice.
-
-Ako nema dovoljno materijala, reci da arhiva ne sadrži dovoljno relevantnih tekstova.
+Ako nema dovoljno materijala, reci to jasno.
 
 Na kraju predloži dalje čitanje.`
             },
             {
               role: "user",
-              content:
-                `Pitanje:
+              content: `Pitanje: ${q}
 
-${q}
-
-Relevantni tekstovi:
+Tekstovi iz arhive:
 
 ${context}`
             }
@@ -116,14 +110,13 @@ ${context}`
 
     const answer =
       aiData?.choices?.[0]?.message?.content ||
-      "Nema dovoljno relevantnih tekstova.";
+      "Nema dovoljno podataka u arhivi.";
 
     return res.status(200).json({
       answer,
       sources: filtered.slice(0, 10),
       ok: true
     });
-
   } catch (err) {
     return res.status(200).json({
       answer: "",
