@@ -25,7 +25,7 @@ export default async function handler(req, res) {
     const supabaseUrl = process.env.SUPABASE_URL;
     const supabaseKey = process.env.SUPABASE_KEY;
 
-    // embedding (OBAVEZAN za RAG)
+    // 1. EMBEDDING
     const embeddingRes = await fetch("https://api.openai.com/v1/embeddings", {
       method: "POST",
       headers: {
@@ -42,13 +42,13 @@ export default async function handler(req, res) {
     const query_embedding = embeddingData?.data?.[0]?.embedding;
 
     if (!query_embedding) {
-      return res.status(500).json({
-        error: "Embedding failed",
-        detail: embeddingData
+      return res.status(200).json({
+        answer: [],
+        error: "Embedding failed"
       });
     }
 
-    // Supabase RPC preko REST (bez supabase-js)
+    // 2. SUPABASE SEARCH (CLEAN + FILTERED)
     const response = await fetch(
       `${supabaseUrl}/rest/v1/rpc/match_documents`,
       {
@@ -60,7 +60,7 @@ export default async function handler(req, res) {
         },
         body: JSON.stringify({
           query_embedding,
-          match_threshold: 0,
+          match_threshold: 0.75,
           match_count: 50
         })
       }
@@ -68,15 +68,18 @@ export default async function handler(req, res) {
 
     const data = await response.json();
 
+    // 3. HARD GUARD (UI stabilnost)
+    const safeData = Array.isArray(data) ? data : [];
+
     return res.status(200).json({
-      answer: data || [],
+      answer: safeData,
       ok: true
     });
 
   } catch (err) {
-    return res.status(500).json({
-      error: "Server crashed",
-      detail: err.message
+    return res.status(200).json({
+      answer: [],
+      error: err.message
     });
   }
 }
