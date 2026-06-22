@@ -19,66 +19,69 @@ export default async function handler(req, res) {
     const q = (body.question || "").trim();
 
     if (!q) {
-      return res.status(200).json({ answer: [], ok: true });
+      return res.status(200).json({ answer: "", sources: [] });
     }
 
     const supabaseUrl = process.env.SUPABASE_URL;
     const supabaseKey = process.env.SUPABASE_KEY;
 
-    // 1. EMBEDDING
-    const embeddingRes = await fetch("https://api.openai.com/v1/embeddings", {
+    // 1. KLASIČNA PRETRAGA (STABILNO)
+    const searchRes = await fetch(
+      `${supabaseUrl}/rest/v1/pulse_documents?select=id,title,permalink,content&or=(title.ilike.*${q}*,content.ilike.*${q}*)&limit=10`,
+      {
+        headers: {
+          apikey: supabaseKey,
+          Authorization: `Bearer ${supabaseKey}`
+        }
+      }
+    );
+
+    const data = await searchRes.json();
+
+    // 2. KONTEXT ZA AI
+    const context = (data || [])
+      .slice(0, 6)
+      .map(d => `${d.title}\n${d.content?.slice(0, 400) || ""}`)
+      .join("\n\n");
+
+    // 3. AI ODGOVOR (VODIČ KROZ BIBLIOTEKU)
+    const aiRes = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
       },
       body: JSON.stringify({
-        model: "text-embedding-3-small",
-        input: q
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content:
+              "Ti si kustos P.U.L.S.E biblioteke. Odgovaraš kratko, jasno i vodiš korisnika kroz tekstove."
+          },
+          {
+            role: "user",
+            content: `Pitanje: ${q}\n\nTekstovi iz arhive:\n${context}\n\nNapiši kratak odgovor i predlog šta dalje čitati.`
+          }
+        ]
       })
     });
 
-    const embeddingData = await embeddingRes.json();
-    const query_embedding = embeddingData?.data?.[0]?.embedding;
+    const aiData = await aiRes.json();
+    const answer =
+      aiData?.choices?.[0]?.message?.content || "Nema dostupnog odgovora.";
 
-    if (!query_embedding) {
-      return res.status(200).json({
-        answer: [],
-        error: "Embedding failed"
-      });
-    }
-
-    // 2. SUPABASE SEARCH (CLEAN + FILTERED)
-    const response = await fetch(
-      `${supabaseUrl}/rest/v1/rpc/match_documents`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "apikey": supabaseKey,
-          "Authorization": `Bearer ${supabaseKey}`
-        },
-        body: JSON.stringify({
-          query_embedding,
-          match_threshold: 0.75,
-          match_count: 50
-        })
-      }
-    );
-
-    const data = await response.json();
-
-    // 3. HARD GUARD (UI stabilnost)
-    const safeData = Array.isArray(data) ? data : [];
-
+    // 4. RETURN
     return res.status(200).json({
-      answer: safeData,
+      answer,
+      sources: data || [],
       ok: true
     });
 
   } catch (err) {
     return res.status(200).json({
-      answer: [],
+      answer: "",
+      sources: [],
       error: err.message
     });
   }
