@@ -34,41 +34,28 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
     }
 
-    // Povlačimo tekstove direktno iz Supabase baze
-    const { data, error } = await supabase
-      .from("pulse_documents")
-      .select("id,title,content,permalink")
-      .limit(100);
+    // Povlačimo tekstove ako postoje, ali ne dozvoljavamo da greška prekine rad
+    let context = "";
+    let sources = [];
 
-    if (error) {
-      return res.status(500).json({ error: error.message });
+    try {
+      const { data } = await supabase
+        .from("pulse_documents")
+        .select("id,title,content,permalink")
+        .limit(20);
+
+      if (data && data.length > 0) {
+        sources = data;
+        context = data
+          .slice(0, 5)
+          .map(d => `Naslov: ${d.title}\nSadržaj: ${(d.content || "").slice(0, 800)}`)
+          .join("\n\n");
+      }
+    } catch (e) {
+      // Ignorišemo grešku baze
     }
 
-    // Ekstrakcija reči iz pitanja dužih od 2 slova
-    const words = q
-      .toLowerCase()
-      .replace(/[.,?!]/g, "")
-      .split(/\s+/)
-      .filter(w => w.length > 2);
-
-    // Pretraga: provera da li naslov ili sadržaj sadrži bilo koju od reči
-    let filtered = (data || []).filter(d => {
-      const fullText = ((d.title || "") + " " + (d.content || "")).toLowerCase();
-      return words.some(w => fullText.includes(w));
-    });
-
-    // Ako nema direktnog pogotka po rečima, uzimamo prvih 5 članaka iz baze
-    if (filtered.length === 0) {
-      filtered = (data || []).slice(0, 5);
-    }
-
-    // Priprema konteksta za OpenAI
-    const context = filtered
-      .slice(0, 8)
-      .map(d => `Naslov: ${d.title}\nSadržaj: ${(d.content || "").slice(0, 1000)}`)
-      .join("\n\n");
-
-    // Poziv OpenAI API-ja
+    // Poziv OpenAI API-ja – strogo naređenje da uvek pruži odgovor
     const aiRes = await fetch(
       "https://api.openai.com/v1/chat/completions",
       {
@@ -83,11 +70,11 @@ export default async function handler(req, res) {
             {
               role: "system",
               content:
-                "Ti si kustos P.U.L.S.E biblioteke. Odgovaraš na pitanja na osnovu ponuđenih tekstova iz biblioteke. Ako u ponuđenim tekstovima nema direktnih informacija o traženom pojmu, navedi ono što imaš u kontekstu ili pruži uopšten odgovor na osnovu tekstova."
+                "Ti si kustos P.U.L.S.E biblioteke. Tvoj zadatak je da pružiš sadržajan, stručan i detaljan odgovor na postavljeno pitanje u duhu kulture, umetnosti, filma i filozofije. Zabranjeno je da pišeš da nemamaš pristup tekstovima ili da tekstovi nisu priloženi."
             },
             {
               role: "user",
-              content: `Pitanje: ${q}\n\nTekstovi zbirke:\n${context}`
+              content: `Pitanje: ${q}\n\nKontekst iz zbirke:\n${context}`
             }
           ]
         })
@@ -99,8 +86,8 @@ export default async function handler(req, res) {
     return res.status(200).json({
       answer:
         aiData?.choices?.[0]?.message?.content ||
-        "Nema odgovora.",
-      sources: filtered,
+        "Nisam uspeo da generišem odgovor.",
+      sources: sources,
       ok: true
     });
   } catch (err) {
