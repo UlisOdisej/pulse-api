@@ -34,29 +34,35 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
     }
 
-    // Izvlačimo ključne reči iz pitanja (duže od 2 slova)
-    const searchWords = q
+    // Izvlačimo koren reči (uzimamo prvih 5-6 slova radi padeža)
+    const rawWords = q
       .toLowerCase()
       .replace(/[.,?!]/g, "")
       .split(/\s+/)
       .filter(w => w.length > 2);
 
-    // Pretražujemo bazu Supabase direktno po naslovu i sadržaju
+    const stems = rawWords.map(w => w.length > 5 ? w.slice(0, 5) : w);
+
+    // Povlačimo veći skup dokumenata iz baze
     const { data, error } = await supabase
       .from("pulse_documents")
       .select("id,title,content,permalink")
-      .limit(200);
+      .limit(500);
 
     let matchedDocs = [];
 
     if (data && data.length > 0) {
       matchedDocs = data.filter(d => {
         const fullText = ((d.title || "") + " " + (d.content || "")).toLowerCase();
-        return searchWords.some(w => fullText.includes(w));
+        return stems.some(stem => fullText.includes(stem));
       });
     }
 
-    // Ako u bazi nema nijednog teksta o traženom pojmu
+    // Ako i dalje nema pogodaka, uzimamo nasumičnih 5 iz baze kao opšti context
+    if (matchedDocs.length === 0 && data && data.length > 0) {
+      matchedDocs = data.slice(0, 5);
+    }
+
     if (matchedDocs.length === 0) {
       return res.status(200).json({
         answer: `U zbirci P.U.L.S.E biblioteke trenutno nema pronađenih tekstova o pojmu "${q}".`,
@@ -65,13 +71,12 @@ export default async function handler(req, res) {
       });
     }
 
-    // Pripravljanje konteksta isključivo od pronađenih tekstova
+    // Priprema konteksta sa stvarnim naslovima i linkovima
     const context = matchedDocs
-      .slice(0, 5)
-      .map(d => `Naslov: ${d.title}\nSadržaj: ${(d.content || "").slice(0, 1200)}`)
+      .slice(0, 6)
+      .map(d => `Naslov: ${d.title}\nSadržaj: ${(d.content || "").slice(0, 1000)}`)
       .join("\n\n---\n\n");
 
-    // Poziv OpenAI API-ja sa strogim ograničenjem na priloženi kontekst
     const aiRes = await fetch(
       "https://api.openai.com/v1/chat/completions",
       {
@@ -86,11 +91,11 @@ export default async function handler(req, res) {
             {
               role: "system",
               content:
-                "Ti si kustos P.U.L.S.E biblioteke. Tvoj zadatak je da odgovoriš na pitanje KORISTEĆI ISKLJUČIVO priložene tekstove iz zbirke. Zabranjeno je izmišljati naslove, autore ili sadržaje koji se ne nalaze u priloženom kontekstu. Citiraj i navedi tačne naslove članaka koji su ti priloženi."
+                "Ti si kustos P.U.L.S.E biblioteke. Odgovori na pitanje isključivo koristeći priložene tekstove iz zbirke. Obavezno navedi tačne naslove članaka iz teksta koji su priloženi."
             },
             {
               role: "user",
-              content: `Pitanje: ${q}\n\nPronađeni tekstovi iz P.U.L.S.E zbirke:\n${context}`
+              content: `Pitanje: ${q}\n\nTekstovi iz P.U.L.S.E zbirke:\n${context}`
             }
           ]
         })
@@ -102,8 +107,8 @@ export default async function handler(req, res) {
     return res.status(200).json({
       answer:
         aiData?.choices?.[0]?.message?.content ||
-        "Nisam uspeo da generišem odgovor na osnovu tekstova.",
-      sources: matchedDocs.slice(0, 5),
+        "Nisam uspeo da generišem odgovor.",
+      sources: matchedDocs.slice(0, 6),
       ok: true
     });
   } catch (err) {
