@@ -34,33 +34,29 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
     }
 
-    // Izvlačimo koren reči (uzimamo prvih 5-6 slova radi padeža)
-    const rawWords = q
+    // Izvlačimo osnovu prve glavne reči za pretragu u bazi (npr. "tarkovsk")
+    const words = q
       .toLowerCase()
       .replace(/[.,?!]/g, "")
       .split(/\s+/)
       .filter(w => w.length > 2);
 
-    const stems = rawWords.map(w => w.length > 5 ? w.slice(0, 5) : w);
+    const mainKeyword = words[0] ? (words[0].length > 5 ? words[0].slice(0, 5) : words[0]) : q;
 
-    // Povlačimo veći skup dokumenata iz baze
-    const { data, error } = await supabase
+    // Direct SQL pretraga kroz celu bazu preko Supabase 'ilike' operatora
+    let { data: matchedDocs, error } = await supabase
       .from("pulse_documents")
       .select("id,title,content,permalink")
-      .limit(500);
+      .or(`title.ilike.%${mainKeyword}%,content.ilike.%${mainKeyword}%`)
+      .limit(8);
 
-    let matchedDocs = [];
-
-    if (data && data.length > 0) {
-      matchedDocs = data.filter(d => {
-        const fullText = ((d.title || "") + " " + (d.content || "")).toLowerCase();
-        return stems.some(stem => fullText.includes(stem));
-      });
-    }
-
-    // Ako i dalje nema pogodaka, uzimamo nasumičnih 5 iz baze kao opšti context
-    if (matchedDocs.length === 0 && data && data.length > 0) {
-      matchedDocs = data.slice(0, 5);
+    // Ako direktna pretraga ne vrati ništa, povlačimo nekoliko bilo kojih članaka
+    if (!matchedDocs || matchedDocs.length === 0) {
+      const { data: fallbackDocs } = await supabase
+        .from("pulse_documents")
+        .select("id,title,content,permalink")
+        .limit(5);
+      matchedDocs = fallbackDocs || [];
     }
 
     if (matchedDocs.length === 0) {
@@ -71,9 +67,8 @@ export default async function handler(req, res) {
       });
     }
 
-    // Priprema konteksta sa stvarnim naslovima i linkovima
+    // Priprema konteksta sa podacima iz pronađenih članaka
     const context = matchedDocs
-      .slice(0, 6)
       .map(d => `Naslov: ${d.title}\nSadržaj: ${(d.content || "").slice(0, 1000)}`)
       .join("\n\n---\n\n");
 
@@ -91,7 +86,7 @@ export default async function handler(req, res) {
             {
               role: "system",
               content:
-                "Ti si kustos P.U.L.S.E biblioteke. Odgovori na pitanje isključivo koristeći priložene tekstove iz zbirke. Obavezno navedi tačne naslove članaka iz teksta koji su priloženi."
+                "Ti si kustos P.U.L.S.E biblioteke. Odgovori na pitanje isključivo koristeći priložene tekstove iz zbirke. Navedi tačne naslove članaka koji su ti priloženi."
             },
             {
               role: "user",
@@ -108,7 +103,7 @@ export default async function handler(req, res) {
       answer:
         aiData?.choices?.[0]?.message?.content ||
         "Nisam uspeo da generišem odgovor.",
-      sources: matchedDocs.slice(0, 6),
+      sources: matchedDocs,
       ok: true
     });
   } catch (err) {
