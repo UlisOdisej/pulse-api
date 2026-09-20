@@ -34,29 +34,35 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
     }
 
-    // Izvlačimo osnovu prve glavne reči za pretragu u bazi (npr. "tarkovsk")
-    const words = q
-      .toLowerCase()
-      .replace(/[.,?!]/g, "")
-      .split(/\s+/)
-      .filter(w => w.length > 2);
+    // Koren reči za fleksibilnije poklapanje
+    const cleanWord = q.toLowerCase().replace(/[.,?!]/g, "").trim();
+    const stem = cleanWord.length > 5 ? cleanWord.slice(0, 5) : cleanWord;
 
-    const mainKeyword = words[0] ? (words[0].length > 5 ? words[0].slice(0, 5) : words[0]) : q;
-
-    // Direct SQL pretraga kroz celu bazu preko Supabase 'ilike' operatora
-    let { data: matchedDocs, error } = await supabase
+    // Pokušaj 1: Pretraga po naslovu (title)
+    let { data: matchedDocs } = await supabase
       .from("pulse_documents")
       .select("id,title,content,permalink")
-      .or(`title.ilike.%${mainKeyword}%,content.ilike.%${mainKeyword}%`)
-      .limit(8);
+      .ilike("title", `%${stem}%`)
+      .limit(10);
 
-    // Ako direktna pretraga ne vrati ništa, povlačimo nekoliko bilo kojih članaka
+    // Pokušaj 2: Ako nije našao u naslovu, tražimo u sadržaju (content)
     if (!matchedDocs || matchedDocs.length === 0) {
-      const { data: fallbackDocs } = await supabase
+      const { data: contentMatches } = await supabase
         .from("pulse_documents")
         .select("id,title,content,permalink")
+        .ilike("content", `%${stem}%`)
+        .limit(10);
+      matchedDocs = contentMatches || [];
+    }
+
+    // Pokušaj 3: Fallback ako baza odbija ilike – uzimamo najnovije članke
+    if (!matchedDocs || matchedDocs.length === 0) {
+      const { data: fallback } = await supabase
+        .from("pulse_documents")
+        .select("id,title,content,permalink")
+        .order("id", { ascending: false })
         .limit(5);
-      matchedDocs = fallbackDocs || [];
+      matchedDocs = fallback || [];
     }
 
     if (matchedDocs.length === 0) {
@@ -67,7 +73,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // Priprema konteksta sa podacima iz pronađenih članaka
     const context = matchedDocs
       .map(d => `Naslov: ${d.title}\nSadržaj: ${(d.content || "").slice(0, 1000)}`)
       .join("\n\n---\n\n");
@@ -86,7 +91,7 @@ export default async function handler(req, res) {
             {
               role: "system",
               content:
-                "Ti si kustos P.U.L.S.E biblioteke. Odgovori na pitanje isključivo koristeći priložene tekstove iz zbirke. Navedi tačne naslove članaka koji su ti priloženi."
+                "Ti si kustos P.U.L.S.E biblioteke. Tvoj zadatak je da pružiš detaljan i stručan odgovor na pitanje primarno koristeći priložene tekstove iz zbirke. Navedi tačne naslove članaka koji su ti priloženi."
             },
             {
               role: "user",
