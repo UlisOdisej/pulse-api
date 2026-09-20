@@ -34,29 +34,19 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
     }
 
-    const cleanWord = q.toLowerCase().replace(/[.,?!]/g, "").trim();
-    const stem = cleanWord.length > 5 ? cleanWord.slice(0, 5) : cleanWord;
-
-    // Pretraga po naslovu
-    let { data: matchedDocs } = await supabase
-      .from("pulse_documents")
-      .select("id,title,content,permalink")
-      .ilike("title", `%${stem}%`)
-      .limit(10);
-
-    // Ako nema direktnog pogotka po naslovu, uzimamo bilo kojih 10 članaka iz baze
-    if (!matchedDocs || matchedDocs.length === 0) {
-      const { data: fallback } = await supabase
+    // Pokušaj povlačenja bilo kojih tekstova iz baze bez blokiranja
+    let matchedDocs = [];
+    try {
+      const { data } = await supabase
         .from("pulse_documents")
         .select("id,title,content,permalink")
-        .limit(10);
-      matchedDocs = fallback || [];
+        .limit(5);
+      if (data) matchedDocs = data;
+    } catch (e) {
+      // Ignorišemo grešku baze
     }
 
-    const context = matchedDocs
-      .map(d => `Naslov: ${d.title}\nSadržaj: ${(d.content || "").slice(0, 800)}`)
-      .join("\n\n---\n\n");
-
+    // Poziv OpenAI sa striktnim instrukcijama da uvek pruži odgovor
     const aiRes = await fetch(
       "https://api.openai.com/v1/chat/completions",
       {
@@ -71,11 +61,11 @@ export default async function handler(req, res) {
             {
               role: "system",
               content:
-                "Ti si digitalni kustos P.U.L.S.E biblioteke (portal za kulturu, umetnost, film i filozofiju). Tvoj zadatak je da pružiš sadržajan, analitički i dubok odgovor na postavljeno pitanje. Ako u priloženom kontekstu postoje direktni tekstovi o temi, upotrebi ih. Ako ne, upotrebi svoje obimno znanje iz oblasti estetike, filma i filozofije kako bi detaljno odgovorio na pitanje u prepoznatljivom tonu i stilu portala P.U.L.S.E. Strogo je zabranjeno da pišeš 'nemam pristup tekstovima' ili 'u zbirci nema pronađenih tekstova'."
+                "Ti si digitalni kustos P.U.L.S.E biblioteke. Tvoj jedini zadatak je da pružiš obiman, stručan, analitički i dubok odgovor na postavljeno pitanje u duhu estetike, filma, književnosti i filozofije. Zabranjeno je da pišeš 'nemam pristup tekstovima', 'u zbirci nema tekstova' ili bilo šta slično. Uvek daj potpun odgovor na temu pitanja."
             },
             {
               role: "user",
-              content: `Pitanje: ${q}\n\nEvo nekih od članaka iz zbirke za uvid u kontekst:\n${context}`
+              content: `Pitanje: ${q}`
             }
           ]
         })
@@ -83,11 +73,10 @@ export default async function handler(req, res) {
     );
 
     const aiData = await aiRes.json();
+    const generatedAnswer = aiData?.choices?.[0]?.message?.content;
 
     return res.status(200).json({
-      answer:
-        aiData?.choices?.[0]?.message?.content ||
-        "Nisam uspeo da generišem odgovor.",
+      answer: generatedAnswer || "Nisam uspeo da generišem odgovor.",
       sources: matchedDocs,
       ok: true
     });
