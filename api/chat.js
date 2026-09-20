@@ -34,73 +34,41 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
     }
 
-    // 1. GENERISANJE EMBEDDING-A
-    const embeddingRes = await fetch(
-      "https://api.openai.com/v1/embeddings",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
-        },
-        body: JSON.stringify({
-          model: "text-embedding-3-small",
-          input: q
-        })
-      }
-    );
+    // Povlačimo tekstove direktno iz Supabase baze
+    const { data, error } = await supabase
+      .from("pulse_documents")
+      .select("id,title,content,permalink")
+      .limit(100);
 
-    const embeddingText = await embeddingRes.text();
-
-    let embeddingData;
-    try {
-      embeddingData = JSON.parse(embeddingText);
-    } catch {
-      return res.status(500).json({
-        error: "Embedding parse error",
-        raw: embeddingText
-      });
+    if (error) {
+      return res.status(500).json({ error: error.message });
     }
 
-    const query_embedding = embeddingData?.data?.[0]?.embedding;
+    // Ekstrakcija reči iz pitanja dužih od 2 slova
+    const words = q
+      .toLowerCase()
+      .replace(/[.,?!]/g, "")
+      .split(/\s+/)
+      .filter(w => w.length > 2);
 
-    if (!query_embedding) {
-      return res.status(500).json({
-        error: "No embedding returned",
-        detail: embeddingData
-      });
-    }
-
-    // 2. PRAVA VEKTORSKA PRETRAGA U SUPABASE BAZI
-    // Pozivamo RPC funkciju sa pragom sličnosti 0.55
-    const { data: documents, error } = await supabase.rpc("match_documents", {
-      query_embedding: query_embedding,
-      match_threshold: 0.55, // Prag smanjen radi obuhvatnijih odgovora
-      match_count: 8
+    // Pretraga: provera da li naslov ili sadržaj sadrži bilo koju od reči
+    let filtered = (data || []).filter(d => {
+      const fullText = ((d.title || "") + " " + (d.content || "")).toLowerCase();
+      return words.some(w => fullText.includes(w));
     });
 
-    let filtered = documents || [];
-
-    // Fallback ako RPC funkcija nije podešena u Supabase-u
-    if (error) {
-      const { data: fallbackData } = await supabase
-        .from("pulse_documents")
-        .select("id,title,content,permalink")
-        .limit(20);
-
-      filtered = (fallbackData || []).filter(d => {
-        const text = ((d.title || "") + " " + (d.content || "")).toLowerCase();
-        // Pretraga po celom pitanju, a ne samo po prvoj reči
-        return q.toLowerCase().split(" ").some(word => word.length > 3 && text.includes(word));
-      });
+    // Ako nema direktnog pogotka po rečima, uzimamo prvih 5 članaka iz baze
+    if (filtered.length === 0) {
+      filtered = (data || []).slice(0, 5);
     }
 
-    // 3. PRIPREMA KONTEKSTA ZA AI
+    // Priprema konteksta za OpenAI
     const context = filtered
-      .map(d => `${d.title}\n${(d.content || "").slice(0, 1000)}`)
+      .slice(0, 8)
+      .map(d => `Naslov: ${d.title}\nSadržaj: ${(d.content || "").slice(0, 1000)}`)
       .join("\n\n");
 
-    // 4. GENERISANJE ODGOVORA PREKO OPENAI
+    // Poziv OpenAI API-ja
     const aiRes = await fetch(
       "https://api.openai.com/v1/chat/completions",
       {
@@ -115,11 +83,11 @@ export default async function handler(req, res) {
             {
               role: "system",
               content:
-                "Ti si kustos P.U.L.S.E biblioteke. Odgovaraš na pitanja na osnovu ponuđenih tekstova iz biblioteke."
+                "Ti si kustos P.U.L.S.E biblioteke. Odgovaraš na pitanja na osnovu ponuđenih tekstova iz biblioteke. Ako u ponuđenim tekstovima nema direktnih informacija o traženom pojmu, navedi ono što imaš u kontekstu ili pruži uopšten odgovor na osnovu tekstova."
             },
             {
               role: "user",
-              content: `Pitanje: ${q}\n\nTekstovi:\n${context}`
+              content: `Pitanje: ${q}\n\nTekstovi zbirke:\n${context}`
             }
           ]
         })
