@@ -34,7 +34,7 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
     }
 
-    // 1. EMBEDDING (SAFE)
+    // 1. GENERISANJE EMBEDDING-A
     const embeddingRes = await fetch(
       "https://api.openai.com/v1/embeddings",
       {
@@ -71,30 +71,36 @@ export default async function handler(req, res) {
       });
     }
 
-    // 2. SUPABASE SAFE CALL
-    const { data, error } = await supabase
-      .from("pulse_documents")
-      .select("id,title,content,permalink")
-      .limit(20);
+    // 2. PRAVA VEKTORSKA PRETRAGA U SUPABASE BAZI
+    // Pozivamo RPC funkciju sa pragom sličnosti 0.55
+    const { data: documents, error } = await supabase.rpc("match_documents", {
+      query_embedding: query_embedding,
+      match_threshold: 0.55, // Prag smanjen radi obuhvatnijih odgovora
+      match_count: 8
+    });
 
+    let filtered = documents || [];
+
+    // Fallback ako RPC funkcija nije podešena u Supabase-u
     if (error) {
-      return res.status(500).json({
-        error: error.message
+      const { data: fallbackData } = await supabase
+        .from("pulse_documents")
+        .select("id,title,content,permalink")
+        .limit(20);
+
+      filtered = (fallbackData || []).filter(d => {
+        const text = ((d.title || "") + " " + (d.content || "")).toLowerCase();
+        // Pretraga po celom pitanju, a ne samo po prvoj reči
+        return q.toLowerCase().split(" ").some(word => word.length > 3 && text.includes(word));
       });
     }
 
-    const filtered = (data || []).filter(d => {
-      const text = ((d.title || "") + " " + (d.content || "")).toLowerCase();
-      return text.includes(q.toLowerCase().split(" ")[0]);
-    });
-
-    // 3. CONTEXT
+    // 3. PRIPREMA KONTEKSTA ZA AI
     const context = filtered
-      .slice(0, 8)
-      .map(d => `${d.title}\n${(d.content || "").slice(0, 800)}`)
+      .map(d => `${d.title}\n${(d.content || "").slice(0, 1000)}`)
       .join("\n\n");
 
-    // 4. OPENAI CHAT
+    // 4. GENERISANJE ODGOVORA PREKO OPENAI
     const aiRes = await fetch(
       "https://api.openai.com/v1/chat/completions",
       {
@@ -109,7 +115,7 @@ export default async function handler(req, res) {
             {
               role: "system",
               content:
-                "Ti si kustos P.U.L.S.E biblioteke. Odgovaraš samo na osnovu teksta."
+                "Ti si kustos P.U.L.S.E biblioteke. Odgovaraš na pitanja na osnovu ponuđenih tekstova iz biblioteke."
             },
             {
               role: "user",
