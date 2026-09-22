@@ -64,7 +64,7 @@ export default async function handler(req, res) {
     try {
       const { data, error } = await supabase.rpc("match_documents", {
         query_embedding: queryEmbedding,
-        match_threshold: 0.3,
+        match_threshold: -1,
         match_count: 5
       });
       if (error) dbError = error.message;
