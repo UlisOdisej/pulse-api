@@ -20,9 +20,7 @@ export default async function handler(req, res) {
     }
 
     const body =
-      typeof req.body === "string"
-        ? JSON.parse(req.body)
-        : req.body || {};
+      typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
 
     const q = (body.question || "").trim();
 
@@ -33,57 +31,42 @@ export default async function handler(req, res) {
     if (!process.env.OPENAI_API_KEY) {
       return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
     }
-
-    // Pokušaj povlačenja bilo kojih tekstova iz baze bez blokiranja
-    let matchedDocs = [];
-    try {
-      const { data } = await supabase
-        .from("pulse_documents")
-        .select("id,title,content,permalink")
-        .limit(5);
-      if (data) matchedDocs = data;
-    } catch (e) {
-      // Ignorišemo grešku baze
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return res.status(500).json({ error: "Missing ANTHROPIC_API_KEY" });
     }
 
-    // Poziv OpenAI sa striktnim instrukcijama da uvek pruži odgovor
-    const aiRes = await fetch(
-      "https://api.openai.com/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
-        },
-        body: JSON.stringify({
-          model: "gpt-4o-mini",
-          messages: [
-            {
-              role: "system",
-              content:
-                "Ti si digitalni kustos P.U.L.S.E biblioteke. Tvoj jedini zadatak je da pružiš obiman, stručan, analitički i dubok odgovor na postavljeno pitanje u duhu estetike, filma, književnosti i filozofije. Zabranjeno je da pišeš 'nemam pristup tekstovima', 'u zbirci nema tekstova' ili bilo šta slično. Uvek daj potpun odgovor na temu pitanja."
-            },
-            {
-              role: "user",
-              content: `Pitanje: ${q}`
-            }
-          ]
-        })
-      }
-    );
-
-    const aiData = await aiRes.json();
-    const generatedAnswer = aiData?.choices?.[0]?.message?.content;
-
-    return res.status(200).json({
-      answer: generatedAnswer || "Nisam uspeo da generišem odgovor.",
-      sources: matchedDocs,
-      ok: true
+    // 1. Napravi embedding pitanja (isti model kao za tekstove u bazi)
+    const embRes = await fetch("https://api.openai.com/v1/embeddings", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: "text-embedding-3-small",
+        input: q
+      })
     });
-  } catch (err) {
-    return res.status(500).json({
-      error: err.message,
-      stack: err.stack
-    });
-  }
-}
+
+    if (!embRes.ok) {
+      const errText = await embRes.text();
+      return res.status(500).json({ error: "Embedding failed", detail: errText });
+    }
+
+    const embData = await embRes.json();
+    const queryEmbedding = embData?.data?.[0]?.embedding;
+
+    if (!queryEmbedding) {
+      return res.status(500).json({ error: "No embedding returned" });
+    }
+
+    // 2. Prava vector pretraga kroz match_documents funkciju u bazi
+    let matchedDocs = [];
+    let dbError = null;
+    try {
+      const { data, error } = await supabase.rpc("match_documents", {
+        query_embedding: queryEmbedding,
+        match_threshold: 0.75,
+        match_count: 5
+      });
+      if (error)
