@@ -60,17 +60,15 @@ export default async function handler(req, res) {
     }
 
     let matchedDocs = [];
-    let dbError = null;
     try {
       const { data, error } = await supabase.rpc("match_documents", {
         query_embedding: `[${queryEmbedding.join(",")}]`,
         match_threshold: 0.35,
         match_count: 5
       });
-      if (error) dbError = error.message;
       if (data) matchedDocs = data;
     } catch (e) {
-      dbError = e.message;
+      // greška u pretrazi se ćutke ignoriše; matchedDocs ostaje []
     }
 
     const context = matchedDocs
@@ -114,7 +112,6 @@ export default async function handler(req, res) {
         permalink: d.permalink,
         similarity: d.similarity
       })),
-      dbError,
       ok: true
     });
   } catch (err) {
