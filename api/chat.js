@@ -23,17 +23,33 @@ export default async function handler(req, res) {
     if (!q) return res.status(200).json({ answer: "", sources: [], hasMore: false, ok: true });
     if (!process.env.OPENAI_API_KEY) return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
 
-    // 1. Prvo tražimo direktan tekstualni pogodak u naslovu ili sadržaju (Exact Keyword Match)
-    const { data: exactDocs } = await supabase
+    // 1. Direktna pretraga po naslovu (prvi prioritet)
+    const { data: titleDocs } = await supabase
       .from("pulse_documents")
       .select("id, title, content, permalink")
-      .or(`title.ilike.%${q}%,content.ilike.%${q}%`)
-      .limit(30);
+      .ilike("title", `%${q}%`)
+      .limit(20);
 
-    let matchedDocs = exactDocs || [];
+    let matchedDocs = titleDocs || [];
 
-    // 2. Ako direktna pretraga vrati manje od 5 tekstova, dopunjujemo strožijom vektorskom pretragom
-    if (matchedDocs.length < 5) {
+    // 2. Ako nema dovoljno pogodaka po naslovu, tražimo po sadržaju
+    if (matchedDocs.length < limit) {
+      const { data: contentDocs } = await supabase
+        .from("pulse_documents")
+        .select("id, title, content, permalink")
+        .ilike("content", `%${q}%`)
+        .limit(20);
+
+      if (contentDocs) {
+        const existingIds = new Set(matchedDocs.map(d => d.id));
+        contentDocs.forEach(d => {
+          if (!existingIds.has(d.id)) matchedDocs.push(d);
+        });
+      }
+    }
+
+    // 3. Vektorska pretraga samo kao rezervna opcija sa visokim pragom (0.55)
+    if (matchedDocs.length < limit) {
       const embRes = await fetch("https://api.openai.com/v1/embeddings", {
         method: "POST",
         headers: {
@@ -50,19 +66,16 @@ export default async function handler(req, res) {
       const queryEmbedding = embData?.data?.[0]?.embedding;
 
       if (queryEmbedding) {
-        // Podignut match_threshold na 0.45 da ne meša nebitne teme
         const { data: vectorDocs } = await supabase.rpc("match_pulse_documents", {
           query_embedding: queryEmbedding,
-          match_threshold: 0.45,
-          match_count: 30
+          match_threshold: 0.55,
+          match_count: 20
         });
 
-        if (vectorDocs && vectorDocs.length > 0) {
+        if (vectorDocs) {
           const existingIds = new Set(matchedDocs.map(d => d.id));
-          vectorDocs.forEach(doc => {
-            if (!existingIds.has(doc.id)) {
-              matchedDocs.push(doc);
-            }
+          vectorDocs.forEach(d => {
+            if (!existingIds.has(d.id)) matchedDocs.push(d);
           });
         }
       }
@@ -70,19 +83,18 @@ export default async function handler(req, res) {
 
     if (matchedDocs.length === 0) {
       return res.status(200).json({
-        answer: `U zbirci P.U.L.S.E biblioteke nema pronađenih tekstova za pojam "${q}".`,
+        answer: `U zbirci P.U.L.S.E biblioteke trenutno nema pronađenih tekstova o pojmu "${q}".`,
         sources: [],
         hasMore: false,
         ok: true
       });
     }
 
-    // Paginacija
     const paginatedDocs = matchedDocs.slice(offset, offset + limit);
     const hasMore = matchedDocs.length > offset + limit;
 
     const context = paginatedDocs
-      .map(d => `Naslov: ${d.title}\nLink: ${d.permalink}\nSadržaj: ${(d.content || "").slice(0, 800)}`)
+      .map(d => `Naslov: ${d.title}\nLink: ${d.permalink}\nSadržaj: ${(d.content || "").slice(0, 600)}`)
       .join("\n\n---\n\n");
 
     const aiRes = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -96,11 +108,11 @@ export default async function handler(req, res) {
         messages: [
           {
             role: "system",
-            content: "Ti si kustos P.U.L.S.E biblioteke. Odgovori na pitanje isključivo na osnovu navedenih tekstova. Nemoj mešati teme koje nisu u vezi sa upitom."
+            content: "Ti si kustos P.U.L.S.E biblioteke. Odgovaraj ISKLJUČIVO na osnovu ponuđenih tekstova i drži se teme postavljenog pitanja. Ako priloženi tekstovi ne govore o toj temi, jasno to navedi."
           },
           {
             role: "user",
-            content: `Pitanje: ${q}\n\nTekstovi iz baze:\n${context}`
+            content: `Pitanje: ${q}\n\nTekstovi:\n${context}`
           }
         ]
       })
