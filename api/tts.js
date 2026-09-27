@@ -11,32 +11,27 @@ export default async function handler(req, res) {
     const text = (body.text || "").trim();
 
     if (!text) {
-      return res.status(400).json({ error: "Nedostaje tekst za konverziju u glas." });
+      return res.status(400).json({ error: "Nedostaje tekst." });
     }
 
-    if (!process.env.OPENAI_API_KEY) {
-      return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
-    }
+    // Očisti tekst od markdown znakova i skrati za audio izgovor
+    const cleanText = text
+      .replace(/[*#_~`]/g, "")
+      .replace(/https?:\/\/\S+/g, "")
+      .slice(0, 600);
 
-    // Poziv OpenAI TTS API-ja (skraćujemo tekst ako je predugačak radi bržeg odziva)
-    const cleanText = text.slice(0, 1000);
+    // Google Translate TTS endpoint za srpski jezik (sr)
+    const encodedText = encodeURIComponent(cleanText);
+    const googleTtsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodedText}&tl=sr&client=tw-ob`;
 
-    const response = await fetch("https://api.openai.com/v1/audio/speech", {
-      method: "POST",
+    const response = await fetch(googleTtsUrl, {
       headers: {
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: "tts-1",
-        input: cleanText,
-        voice: "onyx" // "onyx" daje dubok i staložen kustoski glas (može i "alloy", "echo", "fable")
-      })
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+      }
     });
 
     if (!response.ok) {
-      const errData = await response.json().catch(() => ({}));
-      return res.status(response.status).json({ error: errData.error?.message || "Greška pri generisanju zvuka." });
+      return res.status(500).json({ error: "Greška pri generisanju glasa." });
     }
 
     const audioBuffer = await response.arrayBuffer();
