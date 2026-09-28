@@ -41,11 +41,11 @@ export default async function handler(req, res) {
     const embeddingData = await embeddingResponse.json();
     const queryEmbedding = embeddingData.data[0].embedding;
 
-    // 2. Pretraga Supabase baze
+    // 2. Pretraga Supabase baze (podešeno na tačno 5 najrelevantnijih tekstova)
     const { data: documents, error: supabaseError } = await supabase.rpc('match_documents', {
       query_embedding: queryEmbedding,
-      match_threshold: 0.20,
-      match_count: 10
+      match_threshold: 0.35,
+      match_count: 5
     });
 
     if (supabaseError) {
@@ -56,19 +56,18 @@ export default async function handler(req, res) {
     
     // Priprema konteksta za model
     const contextText = docsList
-      .slice(0, 5)
       .map(doc => `Naslov: ${doc.title || 'Bez naslova'}\nSadržaj: ${(doc.content || '').slice(0, 1000)}`)
       .join("\n\n---\n\n");
 
     // 3. Urednički prompt magazina P.U.L.S.E
     const systemPrompt = `Ti si digitalni bibliotekar i urednik magazina P.U.L.S.E.
-Tvoj zadatak je da pružiš sadržajan, analitičan i sintetičan odgovor na korisnikovo pitanje na osnovu priloženih odlomaka iz baze.
+Tvoj zadatak je da pružiš sadržajan, analitičan i sintetičan odgovor na korisnikovo pitanje isključivo na osnovu priloženih odlomaka iz baze.
 
 Pravila:
 - Odgovaraj u duhu esejistike i humanistike magazina P.U.L.S.E.
-- Poveži ideje, teze i autore iz ponuđenih tekstova u jasne celine (par pasusa).
-- Nemoj skraćivati odgovor na samo jednu rečenicu.
-- Ako građa u kontekstu ne sadrži dovoljne podatke, dostojanstveno navedi da biblioteka trenutno nema detaljnije tekstove o tom upitu.`;
+- Poveži ideje, teze i autore iz ponuđenih tekstova u jasnu i smislenu celinu.
+- Nemoj analizirati autore ili teme kojih nema u priloženoj građi.
+- Ako građa u kontekstu ne sadrži dovoljne podatke, navedi da biblioteka trenutno nema detaljnije tekstove o tom upitu.`;
 
     // 4. Generisanje odgovora preko GPT-4o-mini
     const chatResponse = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -83,8 +82,8 @@ Pravila:
           { role: "system", content: systemPrompt },
           { role: "user", content: `Pitanje: "${query}"\n\nDostupna građa:\n${contextText || "Nema direktnih pogodaka."}` }
         ],
-        temperature: 0.4,
-        max_tokens: 900
+        temperature: 0.3,
+        max_tokens: 800
       })
     });
 
