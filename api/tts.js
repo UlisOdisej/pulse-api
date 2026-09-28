@@ -10,27 +10,36 @@ export default async function handler(req, res) {
     const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
     const text = (body.text || "").trim();
 
-    if (!text) {
-      return res.status(400).json({ error: "Nedostaje tekst." });
-    }
+    if (!text) return res.status(400).json({ error: "Nedostaje tekst za čitanje." });
+    if (!process.env.ELEVENLABS_API_KEY) return res.status(500).json({ error: "Missing ELEVENLABS_API_KEY in Vercel." });
+
+    const VOICE_ID = process.env.ELEVENLABS_VOICE_ID || "LmECtQKlHFHPX4psgBT1";
 
     const cleanText = text
       .replace(/[*#_~`]/g, "")
       .replace(/https?:\/\/\S+/g, "")
-      .slice(0, 400);
+      .slice(0, 1000);
 
-    // Korišćenje pouzdanog TTS servisa sa eksplicitnim kodom za srpski jezik (sr-RS)
-    const ttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&q=${encodeURIComponent(cleanText)}&tl=sr`;
-
-    const response = await fetch(ttsUrl, {
+    const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}`, {
+      method: "POST",
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0",
-        "Referer": "https://translate.google.com/"
-      }
+        "Accept": "audio/mpeg",
+        "Content-Type": "application/json",
+        "xi-api-key": process.env.ELEVENLABS_API_KEY
+      },
+      body: JSON.stringify({
+        text: cleanText,
+        model_id: "eleven_multilingual_v2",
+        voice_settings: {
+          stability: 0.5,
+          similarity_boost: 0.8
+        }
+      })
     });
 
     if (!response.ok) {
-      return res.status(500).json({ error: "Greška pri generisanju zvuka." });
+      const err = await response.json().catch(() => ({}));
+      return res.status(response.status).json({ error: err.detail?.message || "Greška pri pozivu ElevenLabs API-ja." });
     }
 
     const audioBuffer = await response.arrayBuffer();
